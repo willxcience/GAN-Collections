@@ -2,6 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import pdb
+
+
 def weights_init(m):
     classname = m.__class__.__name__
     if classname.find('Conv') != -1:
@@ -14,6 +17,7 @@ def weights_init(m):
     elif classname.find('Linear') != -1:
         m.weight.data.normal_(0.0, 0.02)
         m.bias.data.fill_(0)
+
 
 class Generator(nn.Module):
     def __init__(self, params):
@@ -52,9 +56,9 @@ class Generator(nn.Module):
         return x
 
 
-class Discriminator(nn.Module):
+class Discriminator1(nn.Module):
     def __init__(self, params):
-        super(Discriminator, self).__init__()
+        super(Discriminator1, self).__init__()
         self.z_dim = params['z_dim']
         self.slope = params['slope']
         self.num_channels = params['num_channels']
@@ -155,4 +159,76 @@ class Encoder(nn.Module):
         x = self.inference(x)
         return x
 
-class 
+
+class Discriminator2(nn.Module):
+    def __init__(self, params):
+        super(Discriminator2, self).__init__()
+        self.z_dim = params['z_dim']
+        self.slope = params['slope']
+        self.num_channels = params['num_channels']
+        self.aggregation_dim = params["aggregation_dim"]
+
+        self.inference_latent = nn.Linear(self.z_dim, self.aggregation_dim)
+        self.inference_joint = nn.Sequential(
+            nn.Linear(self.aggregation_dim*2, 512),
+            nn.LeakyReLU(self.slope, True),
+            nn.Linear(512, 1),
+            nn.Sigmoid()
+        )
+        self.apply(weights_init)
+
+    def forward(self, z, agg_x):
+        z = self.inference_latent(z)
+        joint = torch.cat((z, agg_x), 1).squeeze()
+        return self.inference_joint(joint)
+
+
+class Aggregator(nn.Module):
+    def __init__(self, params):
+        super(Aggregator, self).__init__()
+
+        self.num_views = params["num_views"]
+        self.slope = params['slope']
+        self.device = params["device"]
+
+        self.activ = nn.LeakyReLU(self.slope, True)
+        self.fc_idx = nn.Linear(self.num_views, 14*14)
+        self.fc_aggre = nn.Linear(14*14*2, 1024)
+
+    def forward(self, x, indices):
+
+        s0, s1, s2, s3 = x.shape
+        x = x.reshape([s0, s1*s2, s3])
+        infer_aggre = torch.zeros(
+            (s0, 1024), dtype=torch.float32).to(self.device)
+
+        for i, idx in enumerate(indices):
+            index_vector = torch.zeros(
+                (s0, self.num_views), dtype=torch.float32).to(self.device)
+            index_vector[:, idx] = 1.0
+            infer_index = self.activ(self.fc_idx(index_vector))
+            infer_x = torch.cat((x[:, :, idx], infer_index), 1).squeeze()
+            infer_aggre += self.fc_aggre(infer_x)
+
+        return infer_aggre
+
+
+class Hencoder(nn.Module):
+    def __init__(self, params):
+        super(Hencoder, self).__init__()
+        self.slope = params['slope']
+        self.z_dim = params['z_dim']
+
+        self.activ = nn.LeakyReLU(self.slope, True)
+        self.dist = torch.distributions.Normal
+        self.fc1 = nn.Linear(1024, 512)
+        self.mean = nn.Linear(512, self.z_dim)
+        self.std = nn.Linear(512, self.z_dim)
+
+    def forward(self, agg_x):
+        x = self.activ(self.fc1(agg_x))
+        m = self.mean(x)
+        s = F.softplus(self.std(x))
+        pd = self.dist(m, s)
+
+        return pd
